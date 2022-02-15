@@ -122,7 +122,8 @@ object IntelliJ {
       RefreshCommand.name,
       "--workspace",
       project.common.workspace.toString,
-      "--no-bloop-exit"
+      "--no-bloop-exit",
+      if (project.common.useBazel) "--useBazel" else "--no-useBazel"
     ) ++
       shared.pants
         .map(path => List("--pants", path.toString))

@@ -12,7 +12,6 @@ class PantsTarget(
     val platform: Option[String],
     val runtimePlatform: Option[String],
     val libraries: collection.Seq[String],
-    val isPantsTargetRoot: Boolean,
     val isPantsModulizable: Boolean,
     val targetType: TargetType,
     val pantsTargetType: PantsTargetType,
@@ -30,7 +29,9 @@ class PantsTarget(
     val exports: Set[String],
     val scope: PantsScope,
     val targetBase: Option[String],
-    val mainClass: Option[String]
+    val mainClass: Option[String],
+    val computedClasspath: Option[Set[Path]] = None,
+    val bazelSourcesJar: Option[Path] = None
 ) {
   require(
     !classesDir.getFileName().toString().endsWith(".json"),
@@ -43,9 +44,12 @@ class PantsTarget(
   private val prefixedId = id.stripPrefix(".")
   def dependencyName: String =
     if (isGeneratedTarget) prefixedId
+    else if (name.startsWith("//")) name.substring(2)
     else name
 
   def isModulizable: Boolean =
     isPantsModulizable &&
       pantsTargetType.isSupported
+
+  override def toString: String = name
 }

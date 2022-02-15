@@ -1,48 +1,27 @@
 package scala.meta.internal.fastpass.pantsbuild
 
-import java.io.IOException
-import java.nio.charset.StandardCharsets
-import java.nio.file.FileSystems
-import java.nio.file.Files
-import java.nio.file.NoSuchFileException
-import java.nio.file.Path
-import java.nio.file.Paths
-import java.nio.file.StandardCopyOption
-import java.util.concurrent.ConcurrentHashMap
-import java.{util => ju}
-
-import scala.annotation.switch
-import scala.annotation.tailrec
-import scala.collection.mutable
-import scala.concurrent.ExecutionContext
-import scala.sys.process.Process
-import scala.util.Failure
-import scala.util.Properties
-import scala.util.Success
-import scala.util.Try
-import scala.util.control.NonFatal
-
-import scala.meta.internal.fastpass.BuildInfo
-import scala.meta.internal.fastpass.FastpassEnrichments._
-import scala.meta.internal.fastpass.FastpassLogger
-import scala.meta.internal.fastpass.InterruptException
-import scala.meta.internal.fastpass.MD5
-import scala.meta.internal.fastpass.SystemProcess
-import scala.meta.internal.fastpass.pantsbuild.commands._
-import scala.meta.internal.io.FileIO
-import scala.meta.io.AbsolutePath
-import scala.meta.io.Classpath
-
-import bloop.config.Tag
-import bloop.config.{Config => C}
-import coursierapi.Dependency
-import coursierapi.MavenRepository
-import metaconfig.cli.CliApp
-import metaconfig.cli.HelpCommand
-import metaconfig.cli.TabCompleteCommand
-import metaconfig.cli.VersionCommand
+import bloop.config.{Tag, Config => C}
+import com.google.devtools.build.lib.analysis.AnalysisProtosV2
+import coursierapi.{Dependency, MavenRepository}
+import metaconfig.cli.{CliApp, HelpCommand, TabCompleteCommand, VersionCommand}
 import org.eclipse.lsp4j.jsonrpc.CancelChecker
 import ujson.Value
+import java.io._
+import java.nio.charset.StandardCharsets
+import java.nio.file._
+import java.util.concurrent.ConcurrentHashMap
+import java.{util => ju}
+import scala.annotation.{switch, tailrec}
+import scala.collection.mutable
+import scala.concurrent.ExecutionContext
+import scala.meta.internal.fastpass.FastpassEnrichments._
+import scala.meta.internal.fastpass._
+import scala.meta.internal.fastpass.pantsbuild.commands._
+import scala.meta.internal.io.FileIO
+import scala.meta.io.{AbsolutePath, Classpath}
+import scala.sys.process.Process
+import scala.util.control.NonFatal
+import scala.util.{Failure, Properties, Success, Try}
 
 object BloopPants {
   lazy val app: CliApp = CliApp(
@@ -121,34 +100,78 @@ object BloopPants {
       Files.createDirectories(bloopDir)
       args.token.checkCanceled()
 
-      def readJson(file: Path): Option[Value] = {
-        Try {
-          val text =
-            new String(Files.readAllBytes(outputFile), StandardCharsets.UTF_8)
-          ujson.read(text)
-        }.toOption
-      }
-      val fromCache: Option[Value] =
-        if (!args.isCache) None
-        else readJson(outputFile)
-      val fromExport: Option[Value] =
-        fromCache.orElse {
-          runPantsExport(args, outputFile)
-          readJson(outputFile)
+      if (args.common.useBazel) {
+        val export = runBazelExport(args)
+        new BloopPants(args, bloopDir, export).run()
+      } else {
+        def readJson(file: Path): Option[Value] = {
+          Try {
+            val text =
+              new String(Files.readAllBytes(outputFile), StandardCharsets.UTF_8)
+            ujson.read(text)
+          }.toOption
         }
 
-      fromExport match {
-        case Some(value) =>
-          val export = PantsExport.fromJson(args, value)
-          new BloopPants(args, bloopDir, export).run()
-        case None =>
-          throw new NoSuchFileException(
-            outputFile.toString(),
-            null,
-            "expected this file to exist after running `./pants export`"
-          )
+        val fromCache: Option[Value] =
+          if (!args.isCache) None
+          else readJson(outputFile)
+        val fromExport: Option[Value] =
+          fromCache.orElse {
+            runPantsExport(args, outputFile)
+            readJson(outputFile)
+          }
+
+        fromExport match {
+          case Some(value) =>
+            val export = PantsExport.fromJson(args, value)
+            new BloopPants(args, bloopDir, export).run()
+          case None =>
+            throw new NoSuchFileException(
+              outputFile.toString(),
+              null,
+              "expected this file to exist after running `./pants export`"
+            )
+        }
       }
     }
+
+  private def runExportImpl(
+    args: Export,
+    shortName: String,
+    command: List[String],
+    stdout: Option[OutputStream] = None,
+    stderr: Option[OutputStream] = None
+  )(implicit ec: ExecutionContext): Unit = {
+    val bloopSymlink = args.workspace.resolve(".bloop")
+    val bloopSymlinkTarget =
+      if (Files.isSymbolicLink(bloopSymlink)) {
+        Some(Files.readSymbolicLink(bloopSymlink))
+      } else {
+        None
+      }
+    try {
+      // NOTE(olafur): Delete `.bloop` symbolic link while doing `./pants
+      // export-dep-as-jar` because the symbolic link can trigger errors in
+      // Pants. The symbolic link is recovered in the finally block after the
+      // export command completes.
+      bloopSymlinkTarget.foreach(_ => Files.deleteIfExists(bloopSymlink))
+      SystemProcess.run(
+        shortName,
+        command,
+        command,
+        args.workspace,
+        args.token,
+        stdout.getOrElse(args.app.out),
+        stderr.getOrElse(args.app.err)
+      )
+    } finally {
+      bloopSymlinkTarget.foreach { target =>
+        if (!Files.exists(bloopSymlink)) {
+          Files.createSymbolicLink(bloopSymlink, target)
+        }
+      }
+    }
+  }
 
   private def runPantsExport(
       args: Export,
@@ -170,35 +193,99 @@ object BloopPants {
       s"export-fastpass"
     ) ++ args.targets
     val shortName = "pants export-fastpass"
-    val bloopSymlink = args.workspace.resolve(".bloop")
-    val bloopSymlinkTarget =
-      if (Files.isSymbolicLink(bloopSymlink)) {
-        Some(Files.readSymbolicLink(bloopSymlink))
-      } else {
-        None
-      }
-    try {
-      // NOTE(olafur): Delete `.bloop` symbolic link while doing `./pants
-      // export-dep-as-jar` because the symbolic link can trigger errors in
-      // Pants. The symbolic link is recovered in the finally block after the
-      // export command completes.
-      bloopSymlinkTarget.foreach(_ => Files.deleteIfExists(bloopSymlink))
-      SystemProcess.run(
-        shortName,
-        command,
-        command,
-        args.workspace,
-        args.token,
-        args.app.out,
-        args.app.err
-      )
-    } finally {
-      bloopSymlinkTarget.foreach { target =>
-        if (!Files.exists(bloopSymlink)) {
-          Files.createSymbolicLink(bloopSymlink, target)
-        }
-      }
+    runExportImpl(args, shortName, command)
+  }
+
+  private def runBazelExport(
+    args: Export
+  )(implicit ec: ExecutionContext): PantsExport = {
+    val interestingKinds = BloopBazel.InterestingClasses.mkString("|")
+
+    val targetsSet = args.targets.mkString("set(", " ", ")")
+    val cqueryCmd = List[String](
+      args.common.bazelBinary.toString,
+      "cquery",
+      s"""deps($targetsSet)""",
+      "--output=proto",
+      "--proto:output_rule_attrs=deps,javacopts,scalacopts,tags",
+      "--noproto:rule_inputs_and_outputs",
+      "--noproto:default_values",
+      "--noproto:locations"
+    )
+    var cqueryStdout = new ByteArrayOutputStream()
+    runExportImpl(args, "bazel cquery", cqueryCmd, stdout = Some(cqueryStdout))
+    val cqueryResults = AnalysisProtosV2.CqueryResult.parseFrom(cqueryStdout.toByteArray)
+
+    //val aqueryCmd = List[String](
+    //  args.common.bazelBinary.toString,
+    //  "aquery",
+    //  s"""mnemonic("Scalac|Javac|JavaSourceJar", deps($targetsSet))""",
+    //  "--noinclude_commandline",
+    //  "--output=proto",
+    //)
+    val cqueryIoCmd = List[String](
+      args.common.bazelBinary.toString,
+      "cquery",
+      s"""kind("$interestingKinds", deps($targetsSet))""",
+      "--output=starlark",
+      "--starlark:file=tcdc/fastavro/query.bzl"
+    )
+
+    cqueryStdout = new ByteArrayOutputStream()
+    runExportImpl(args, "bazel aquery", cqueryIoCmd, stdout = Some(cqueryStdout))
+
+    val sr = new BufferedReader(new InputStreamReader(new ByteArrayInputStream(cqueryStdout.toByteArray)))
+
+    val root = args.project.common.workspace
+    def mkAbs(path: String): Path = {
+      root.resolve(path)
     }
+
+    val ioMap = sr.lines().iterator()
+      .asScala
+      .filter(_.nonEmpty)
+      .map { line =>
+        val js = ujson.read(line)
+        val target = js("label").str
+        val inputs = js("inputs").arr.map(_.str).map(mkAbs)
+        val output = js("output").arr.map(_.str).map(mkAbs)
+        val runtimeDeps = js("transitive_runtime_deps").arr.map(_.str).map(mkAbs)
+        val compileDeps = js("transitive_compile_time_jars").arr.map(_.str).map(mkAbs)
+        val sourceJars = js("source_jars").arr.map(_.str).map(mkAbs)
+
+        val bio = BloopBazel.BuildIO(
+          inputClasspath = compileDeps.toSet,
+          sources = inputs.toSet,
+          outputs = output.toSet,
+          srcJar = sourceJars.toSet
+        )
+
+        target -> bio
+      }
+      .toMap
+
+    cqueryStdout = new ByteArrayOutputStream()
+    val getTargetsCmd = List[String](
+      args.common.bazelBinary.toString,
+      "query",
+      s"""kind("$interestingKinds", $targetsSet)""",
+      "--output=label"
+    )
+    runExportImpl(args, "bazel query", getTargetsCmd, stdout = Some(cqueryStdout))
+    val targetsReader = new BufferedReader(new InputStreamReader(new ByteArrayInputStream(cqueryStdout.toByteArray)))
+    val directTargets = targetsReader.lines()
+      .iterator()
+      .asScala
+      .map(_.split(' ').head)
+      .filterNot(_.endsWith(".semanticdb"))
+      .toSet
+
+    BloopBazel.createExport(
+      args,
+      cqueryResults,
+      directTargets = directTargets,
+      buildIO = ioMap
+    )
   }
 
   def makeReadableFilename(target: String): String = {
@@ -348,7 +435,6 @@ private class BloopPants(
     }
     val generatedProjects = new mutable.LinkedHashSet[Path]
     val allProjects = syntheticProjects ::: projects
-    val byName = allProjects.map(p => p.name -> p).toMap
     allProjects.foreach { project =>
       val finalProject = project
       val id = export.targets.get(finalProject.name).fold(project.name)(_.id)
@@ -455,25 +541,32 @@ private class BloopPants(
   def generateInternalSourcesJars(): collection.Map[Path, Path] = {
     val result = new ConcurrentHashMap[Path, Path]
     resolutionTargets.stream().parallel().forEach { target =>
-      target.targetBase.foreach { targetBase =>
-        val sources = target.internalSourcesJar
-        Files.deleteIfExists(sources)
-        FileIO.withJarFileSystem(
-          AbsolutePath(sources),
-          create = true,
-          close = true
-        ) { root =>
-          val sourceRoot = AbsolutePath(workspace).resolve(targetBase)
-          val jars = new SourcesJarBuilder(export, root.toNIO)
-          jars.writeSourceRoot(sourceRoot.toRelative(AbsolutePath(workspace)))
-          getSources(target)
-            .foreach(dir => jars.expandDirectory(AbsolutePath(dir), sourceRoot))
-          getSourcesGlobs(target, target.baseDirectory).iterator.flatten
-            .foreach(glob => jars.expandGlob(glob, sourceRoot))
-        }
-        toImmutableJars(target).headOption.foreach { default =>
-          result.put(default, sources)
-        }
+      target.bazelSourcesJar match {
+        case Some(sj) =>
+          if (Files.exists(sj)) {
+            Files.copy(sj, target.internalSourcesJar, StandardCopyOption.REPLACE_EXISTING)
+          }
+        case None =>
+          target.targetBase.foreach { targetBase =>
+            val sources = target.internalSourcesJar
+            Files.deleteIfExists(sources)
+            FileIO.withJarFileSystem(
+              AbsolutePath(sources),
+              create = true,
+              close = true
+            ) { root =>
+              val sourceRoot = AbsolutePath(workspace).resolve(targetBase)
+              val jars = new SourcesJarBuilder(export, root.toNIO)
+              jars.writeSourceRoot(sourceRoot.toRelative(AbsolutePath(workspace)))
+              getSources(target)
+                .foreach(dir => jars.expandDirectory(AbsolutePath(dir), sourceRoot))
+              getSourcesGlobs(target, target.baseDirectory).iterator.flatten
+                .foreach(glob => jars.expandGlob(glob, sourceRoot))
+            }
+            toImmutableJars(target).headOption.foreach { default =>
+              result.put(default, sources)
+            }
+          }
       }
     }
     val isGenerated = result.asScala.valuesIterator.toSet
@@ -512,7 +605,7 @@ private class BloopPants(
       if !target.isModulizable && !resolutionTargets.contains(target)
     } yield {
       resolutionTargets.add(target)
-      newSourceModule(target.internalSourcesJar)
+      newSourceModule(target.bazelSourcesJar.getOrElse(target.internalSourcesJar))
     }
     val fromLibs = for {
       library <- libraries.iterator
@@ -684,30 +777,40 @@ private class BloopPants(
   private def toImmutableJars(target: PantsTarget): List[Path] = {
     exportClasspaths.getOrElseUpdate(
       target, {
-        val classpathFile = AbsolutePath(
-          workspace
-            .resolve("dist")
-            .resolve("export-fastpass")
-            .resolve(s"${target.id}-classpath.txt")
-        )
-        if (!classpathFile.isFile) {
-          Nil
-        } else {
-          val mutableClasspath = Classpath(classpathFile.readText.trim())
-          mutableClasspath.entries.zipWithIndex.flatMap {
-            case (alias, i) =>
-              val entry = alias.dealias
+        target.computedClasspath match {
+          case Some(cc) =>
+            cc.zipWithIndex.flatMap { case (p, i) =>
               val suffix = if (i == 0) "" else s"-$i"
-              if (entry.isDirectory) {
-                List(entry.toNIO)
-              } else if (entry.isFile) {
-                List(
-                  toImmutableJar(s"${target.id}$suffix.jar", entry.toNIO)
-                )
-              } else {
-                Nil
+              List(
+                toImmutableJar(s"${target.id}$suffix.jar", p)
+              )
+            }.toList
+          case None =>
+            val classpathFile = AbsolutePath(
+              workspace
+                .resolve("dist")
+                .resolve("export-fastpass")
+                .resolve(s"${target.id}-classpath.txt")
+            )
+            if (!classpathFile.isFile) {
+              Nil
+            } else {
+              val mutableClasspath = Classpath(classpathFile.readText.trim())
+              mutableClasspath.entries.zipWithIndex.flatMap {
+                case (alias, i) =>
+                  val entry = alias.dealias
+                  val suffix = if (i == 0) "" else s"-$i"
+                  if (entry.isDirectory) {
+                    List(entry.toNIO)
+                  } else if (entry.isFile) {
+                    List(
+                      toImmutableJar(s"${target.id}$suffix.jar", entry.toNIO)
+                    )
+                  } else {
+                    Nil
+                  }
               }
-          }
+            }
         }
       }
     )

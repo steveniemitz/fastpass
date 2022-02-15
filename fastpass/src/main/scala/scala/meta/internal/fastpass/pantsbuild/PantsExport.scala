@@ -77,15 +77,6 @@ object PantsExport {
       } yield javaHome
       val libraries: mutable.ArrayBuffer[String] =
         value(PantsKeys.libraries).arr.map(_.str.intern())
-      val compileLibraries: mutable.ArrayBuffer[String] = value
-        .getOrElse(PantsKeys.compileLibraries, value(PantsKeys.libraries))
-        .arr
-        .map(_.str.intern())
-      val runtimeLibraries: mutable.ArrayBuffer[String] = value
-        .getOrElse(PantsKeys.runtimeLibraries, value(PantsKeys.libraries))
-        .arr
-        .map(_.str.intern())
-      val isPantsTargetRoot = value(PantsKeys.isTargetRoot).bool
       val isPantsModulizable = value(PantsKeys.isModulizable).bool
       val pantsTargetType =
         PantsTargetType(value(PantsKeys.pantsTargetType).str)
@@ -118,7 +109,6 @@ object PantsExport {
         platform = platform,
         runtimePlatform = runtimePlatform,
         libraries = libraries,
-        isPantsTargetRoot = isPantsTargetRoot,
         isPantsModulizable = isPantsModulizable,
         targetType = targetType,
         pantsTargetType = pantsTargetType,

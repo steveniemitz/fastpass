@@ -30,7 +30,9 @@ case class ExportOptions(
     @Description("When enabled, Fastpass will not exit the Bloop server.")
     noBloopExit: Boolean = false,
     @Hidden()
-    mergeTargetsInSameDirectory: Boolean = false
+    mergeTargetsInSameDirectory: Boolean = false,
+    @Hidden()
+    bloopPath: Option[Path] = None
 ) {
   def canBloopExit: Boolean = !noBloopExit
 }
