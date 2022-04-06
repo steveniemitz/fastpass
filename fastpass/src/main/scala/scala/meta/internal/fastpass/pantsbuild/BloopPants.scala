@@ -136,11 +136,11 @@ object BloopPants {
     }
 
   private def runExportImpl(
-    args: Export,
-    shortName: String,
-    command: List[String],
-    stdout: Option[OutputStream] = None,
-    stderr: Option[OutputStream] = None
+      args: Export,
+      shortName: String,
+      command: List[String],
+      stdout: Option[OutputStream] = None,
+      stderr: Option[OutputStream] = None
   )(implicit ec: ExecutionContext): Unit = {
     val bloopSymlink = args.workspace.resolve(".bloop")
     val bloopSymlinkTarget =
@@ -197,7 +197,7 @@ object BloopPants {
   }
 
   private def runBazelExport(
-    args: Export
+      args: Export
   )(implicit ec: ExecutionContext): PantsExport = {
     val interestingKinds = BloopBazel.InterestingClasses.mkString("|")
 
@@ -214,7 +214,8 @@ object BloopPants {
     )
     var cqueryStdout = new ByteArrayOutputStream()
     runExportImpl(args, "bazel cquery", cqueryCmd, stdout = Some(cqueryStdout))
-    val cqueryResults = AnalysisProtosV2.CqueryResult.parseFrom(cqueryStdout.toByteArray)
+    val cqueryResults =
+      AnalysisProtosV2.CqueryResult.parseFrom(cqueryStdout.toByteArray)
 
     //val aqueryCmd = List[String](
     //  args.common.bazelBinary.toString,
@@ -232,16 +233,25 @@ object BloopPants {
     )
 
     cqueryStdout = new ByteArrayOutputStream()
-    runExportImpl(args, "bazel aquery", cqueryIoCmd, stdout = Some(cqueryStdout))
+    runExportImpl(
+      args,
+      "bazel aquery",
+      cqueryIoCmd,
+      stdout = Some(cqueryStdout)
+    )
 
-    val sr = new BufferedReader(new InputStreamReader(new ByteArrayInputStream(cqueryStdout.toByteArray)))
+    val sr = new BufferedReader(
+      new InputStreamReader(new ByteArrayInputStream(cqueryStdout.toByteArray))
+    )
 
     val root = args.project.common.workspace
     def mkAbs(path: String): Path = {
       root.resolve(path)
     }
 
-    val ioMap = sr.lines().iterator()
+    val ioMap = sr
+      .lines()
+      .iterator()
       .asScala
       .filter(_.nonEmpty)
       .map { line =>
@@ -249,8 +259,10 @@ object BloopPants {
         val target = js("label").str
         val inputs = js("inputs").arr.map(_.str).map(mkAbs)
         val output = js("output").arr.map(_.str).map(mkAbs)
-        val runtimeDeps = js("transitive_runtime_deps").arr.map(_.str).map(mkAbs)
-        val compileDeps = js("transitive_compile_time_jars").arr.map(_.str).map(mkAbs)
+        val runtimeDeps =
+          js("transitive_runtime_deps").arr.map(_.str).map(mkAbs)
+        val compileDeps =
+          js("transitive_compile_time_jars").arr.map(_.str).map(mkAbs)
         val sourceJars = js("source_jars").arr.map(_.str).map(mkAbs)
 
         val bio = BloopBazel.BuildIO(
@@ -271,9 +283,17 @@ object BloopPants {
       s"""kind("$interestingKinds", $targetsSet)""",
       "--output=label"
     )
-    runExportImpl(args, "bazel query", getTargetsCmd, stdout = Some(cqueryStdout))
-    val targetsReader = new BufferedReader(new InputStreamReader(new ByteArrayInputStream(cqueryStdout.toByteArray)))
-    val directTargets = targetsReader.lines()
+    runExportImpl(
+      args,
+      "bazel query",
+      getTargetsCmd,
+      stdout = Some(cqueryStdout)
+    )
+    val targetsReader = new BufferedReader(
+      new InputStreamReader(new ByteArrayInputStream(cqueryStdout.toByteArray))
+    )
+    val directTargets = targetsReader
+      .lines()
       .iterator()
       .asScala
       .map(_.split(' ').head)
@@ -544,7 +564,11 @@ private class BloopPants(
       target.bazelSourcesJar match {
         case Some(sj) =>
           if (Files.exists(sj)) {
-            Files.copy(sj, target.internalSourcesJar, StandardCopyOption.REPLACE_EXISTING)
+            Files.copy(
+              sj,
+              target.internalSourcesJar,
+              StandardCopyOption.REPLACE_EXISTING
+            )
           }
         case None =>
           target.targetBase.foreach { targetBase =>
@@ -557,9 +581,12 @@ private class BloopPants(
             ) { root =>
               val sourceRoot = AbsolutePath(workspace).resolve(targetBase)
               val jars = new SourcesJarBuilder(export, root.toNIO)
-              jars.writeSourceRoot(sourceRoot.toRelative(AbsolutePath(workspace)))
+              jars
+                .writeSourceRoot(sourceRoot.toRelative(AbsolutePath(workspace)))
               getSources(target)
-                .foreach(dir => jars.expandDirectory(AbsolutePath(dir), sourceRoot))
+                .foreach(dir =>
+                  jars.expandDirectory(AbsolutePath(dir), sourceRoot)
+                )
               getSourcesGlobs(target, target.baseDirectory).iterator.flatten
                 .foreach(glob => jars.expandGlob(glob, sourceRoot))
             }
@@ -605,7 +632,9 @@ private class BloopPants(
       if !target.isModulizable && !resolutionTargets.contains(target)
     } yield {
       resolutionTargets.add(target)
-      newSourceModule(target.bazelSourcesJar.getOrElse(target.internalSourcesJar))
+      newSourceModule(
+        target.bazelSourcesJar.getOrElse(target.internalSourcesJar)
+      )
     }
     val fromLibs = for {
       library <- libraries.iterator
@@ -779,11 +808,12 @@ private class BloopPants(
       target, {
         target.computedClasspath match {
           case Some(cc) =>
-            cc.zipWithIndex.flatMap { case (p, i) =>
-              val suffix = if (i == 0) "" else s"-$i"
-              List(
-                toImmutableJar(s"${target.id}$suffix.jar", p)
-              )
+            cc.zipWithIndex.flatMap {
+              case (p, i) =>
+                val suffix = if (i == 0) "" else s"-$i"
+                List(
+                  toImmutableJar(s"${target.id}$suffix.jar", p)
+                )
             }.toList
           case None =>
             val classpathFile = AbsolutePath(

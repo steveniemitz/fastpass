@@ -19,7 +19,8 @@ object SystemProcess {
       out: OutputStream,
       err: OutputStream
   )(implicit ec: ExecutionContext): Unit = {
-    val io = BasicIO.standard(false)
+    val io = BasicIO
+      .standard(false)
       .withOutput(is => BasicIO.transferFully(is, out))
       .withError(is => BasicIO.transferFully(is, err))
     val exportTimer = new Timer(Time.system)

@@ -11,20 +11,14 @@ object BloopBazel {
   type TargetMap = Map[String, AnalysisProtosV2.ConfiguredTarget]
 
   val InterestingClasses = Set(
-    "_scala_macro_library",
-    "target_union",
-    "resources_union",
-    "thrift_library",
-    "scala_junit_test",
-    "java_library",
-    "scala_binary",
-    "scala_library",
-    "scala_import",
-    "third_party_jvm_import",
-    "alias"
+    "_scala_macro_library", "target_union", "resources_union", "thrift_library",
+    "scala_junit_test", "java_library", "scala_binary", "scala_library",
+    "scala_import", "third_party_jvm_import", "alias"
   )
 
-  private class PathFragmentResolver(pathFragmentLookup: Map[Int, AnalysisProtosV2.PathFragment]) {
+  private class PathFragmentResolver(
+      pathFragmentLookup: Map[Int, AnalysisProtosV2.PathFragment]
+  ) {
     private[this] final val memo = mutable.Map[Int, String]()
 
     private def resolveImpl(id: Int, sb: StringBuilder): Unit = {
@@ -40,49 +34,62 @@ object BloopBazel {
     }
 
     def resolve(id: Int): String = {
-      memo.getOrElseUpdate(id, {
-        val sb = new StringBuilder
-        resolveImpl(id, sb)
-        sb.toString()
-      })
+      memo.getOrElseUpdate(
+        id, {
+          val sb = new StringBuilder
+          resolveImpl(id, sb)
+          sb.toString()
+        }
+      )
     }
   }
 
   private class DepSetResolver(
-    depSetsById: Map[Int, AnalysisProtosV2.DepSetOfFiles],
-    artifactsById: Map[Int, AnalysisProtosV2.Artifact],
-    pathResolver: PathFragmentResolver
+      depSetsById: Map[Int, AnalysisProtosV2.DepSetOfFiles],
+      artifactsById: Map[Int, AnalysisProtosV2.Artifact],
+      pathResolver: PathFragmentResolver
   ) {
     private[this] final val memo = mutable.Map[Int, Set[String]]()
 
-    private def resolveImpl(id: Int, builder: mutable.Builder[String, _]): Unit = {
+    private def resolveImpl(
+        id: Int,
+        builder: mutable.Builder[String, _]
+    ): Unit = {
       val depSet = depSetsById(id)
-      val directFragments = depSet.getDirectArtifactIdsList.iterator().asScala.map { artId =>
-        val artifact = artifactsById(artId)
-        pathResolver.resolve(artifact.getPathFragmentId)
-      }
+      val directFragments =
+        depSet.getDirectArtifactIdsList.iterator().asScala.map { artId =>
+          val artifact = artifactsById(artId)
+          pathResolver.resolve(artifact.getPathFragmentId)
+        }
       builder ++= directFragments
 
-      depSet.getTransitiveDepSetIdsList.iterator().asScala.foreach(d => resolveImpl(d, builder))
+      depSet.getTransitiveDepSetIdsList
+        .iterator()
+        .asScala
+        .foreach(d => resolveImpl(d, builder))
     }
 
     def resolve(id: Int): Set[String] = {
-      memo.getOrElseUpdate(id, {
-        val sb = Set.newBuilder[String]
-        resolveImpl(id, sb)
-        sb.result()
-      })
+      memo.getOrElseUpdate(
+        id, {
+          val sb = Set.newBuilder[String]
+          resolveImpl(id, sb)
+          sb.result()
+        }
+      )
     }
   }
 
   final case class BuildIO(
-    inputClasspath: Set[Path],
-    sources: Set[Path],
-    outputs: Set[Path],
-    srcJar: Set[Path]
+      inputClasspath: Set[Path],
+      sources: Set[Path],
+      outputs: Set[Path],
+      srcJar: Set[Path]
   )
 
-  private def buildActionGraph(graph: AnalysisProtosV2.ActionGraphContainer): Map[String, BuildIO] = {
+  private def buildActionGraph(
+      graph: AnalysisProtosV2.ActionGraphContainer
+  ): Map[String, BuildIO] = {
     val ruleClassLookup = graph.getRuleClassesList
       .iterator()
       .asScala
@@ -95,8 +102,7 @@ object BloopBazel {
       .map { pf => pf.getId -> pf }
       .toMap
 
-    val actionsByTarget = graph.getActionsList
-      .asScala
+    val actionsByTarget = graph.getActionsList.asScala
       .groupBy(_.getTargetId)
 
     val targetLookup = graph.getTargetsList
@@ -119,60 +125,72 @@ object BloopBazel {
       .toMap
 
     val pathFragmentResolver = new PathFragmentResolver(pathFragmentLookup)
-    val depSetResolver = new DepSetResolver(depSetsById, artifactsById,  pathFragmentResolver)
+    val depSetResolver =
+      new DepSetResolver(depSetsById, artifactsById, pathFragmentResolver)
 
     def resolveInputs(act: AnalysisProtosV2.Action): Iterator[String] = {
-      act.getInputDepSetIdsList.iterator().asScala.flatMap(ds => depSetResolver.resolve(ds))
+      act.getInputDepSetIdsList
+        .iterator()
+        .asScala
+        .flatMap(ds => depSetResolver.resolve(ds))
     }
 
     def resolveOutputs(act: AnalysisProtosV2.Action): Iterator[String] = {
-      act.getOutputIdsList.iterator().asScala.map { art => pathFragmentResolver.resolve(artifactsById(art).getPathFragmentId) }
+      act.getOutputIdsList.iterator().asScala.map { art =>
+        pathFragmentResolver.resolve(artifactsById(art).getPathFragmentId)
+      }
     }
 
-    targetLookup.map { case (targetName, target) =>
-      val targetActions = actionsByTarget(target.getId)
-      val srcJarAction = targetActions.find(act => act.getMnemonic == "JavaSourceJar")
-      val scalacAction = targetActions.find(act => act.getMnemonic == "Scalac")
+    targetLookup.map {
+      case (targetName, target) =>
+        val targetActions = actionsByTarget(target.getId)
+        val srcJarAction =
+          targetActions.find(act => act.getMnemonic == "JavaSourceJar")
+        val scalacAction =
+          targetActions.find(act => act.getMnemonic == "Scalac")
 
-      val scalacInputs = scalacAction.iterator
-        .flatMap(resolveInputs)
-        .filter(_.endsWith(".jar"))
-        .toSet
+        val scalacInputs = scalacAction.iterator
+          .flatMap(resolveInputs)
+          .filter(_.endsWith(".jar"))
+          .toSet
 
-      val scalacOutputs = scalacAction.iterator
-        .flatMap(resolveOutputs)
-        .filter(_.endsWith(".jar"))
-        .toSet
+        val scalacOutputs = scalacAction.iterator
+          .flatMap(resolveOutputs)
+          .filter(_.endsWith(".jar"))
+          .toSet
 
-      val srcJarInputs = srcJarAction.iterator
-        .flatMap(resolveInputs)
-        .filter(p => p.endsWith(".scala") || p.endsWith(".java"))
-        .toSet
+        val srcJarInputs = srcJarAction.iterator
+          .flatMap(resolveInputs)
+          .filter(p => p.endsWith(".scala") || p.endsWith(".java"))
+          .toSet
 
-      val srcJarOutputs = srcJarAction.iterator
-        .flatMap(resolveOutputs)
-        .toSet
+        val srcJarOutputs = srcJarAction.iterator
+          .flatMap(resolveOutputs)
+          .toSet
 
-      //targetName -> BuildIO(
-      //  inputClasspath = scalacInputs,
-      //  sources = srcJarInputs,
-      //  outputs = scalacOutputs,
-      //  srcJar = srcJarOutputs)
-      ???
+        //targetName -> BuildIO(
+        //  inputClasspath = scalacInputs,
+        //  sources = srcJarInputs,
+        //  outputs = scalacOutputs,
+        //  srcJar = srcJarOutputs)
+        ???
     }
   }
 
   class Impl(
-    args: Export,
-    targetMap: TargetMap,
-    directTargets: Set[String],
-    buildIO: Map[String, BuildIO],
-    internalSourcesDir: Path
+      args: Export,
+      targetMap: TargetMap,
+      directTargets: Set[String],
+      buildIO: Map[String, BuildIO],
+      internalSourcesDir: Path
   ) {
     private[this] final val transitiveMemo = mutable.Map[String, Set[String]]()
 
-    private def directDeps(target: AnalysisProtosV2.ConfiguredTarget): Set[String] = {
-      target.getTarget.getRule.getAttributeList.asScala.find(_.getName == "deps") match {
+    private def directDeps(
+        target: AnalysisProtosV2.ConfiguredTarget
+    ): Set[String] = {
+      target.getTarget.getRule.getAttributeList.asScala
+        .find(_.getName == "deps") match {
         case None => Set.empty
         case Some(deps) =>
           deps.getStringListValueList.asScala.toSet
@@ -180,22 +198,30 @@ object BloopBazel {
     }
 
     private def transitiveDeps(
-      root: AnalysisProtosV2.ConfiguredTarget
+        root: AnalysisProtosV2.ConfiguredTarget
     ): Set[String] = {
-      transitiveMemo.getOrElseUpdate(root.getTarget.getRule.getName, {
-        val dd = directDeps(root)
-        dd.flatMap { target =>
-          transitiveDeps(targetMap(target))
-        } ++ dd ++ Seq(root.getTarget.getRule.getName)
-      })
+      transitiveMemo.getOrElseUpdate(
+        root.getTarget.getRule.getName, {
+          val dd = directDeps(root)
+          dd.flatMap { target =>
+            transitiveDeps(targetMap(target))
+          } ++ dd ++ Seq(root.getTarget.getRule.getName)
+        }
+      )
     }
 
-    private def stringListAttr(target: AnalysisProtosV2.ConfiguredTarget, name: String): Option[Seq[String]] = {
-      target.getTarget.getRule.getAttributeList.asScala.find(_.getName == name)
+    private def stringListAttr(
+        target: AnalysisProtosV2.ConfiguredTarget,
+        name: String
+    ): Option[Seq[String]] = {
+      target.getTarget.getRule.getAttributeList.asScala
+        .find(_.getName == name)
         .map(_.getStringListValueList.asScala.toBuffer)
     }
 
-    private def getJvmModuleInfo(target: AnalysisProtosV2.ConfiguredTarget): Option[PantsLibrary] = {
+    private def getJvmModuleInfo(
+        target: AnalysisProtosV2.ConfiguredTarget
+    ): Option[PantsLibrary] = {
       val tags = target.getTarget.getRule.getAttributeList.asScala
         .find(_.getName == "tags")
         .map { attr => attr.getStringListValueList.asScala }
@@ -205,28 +231,37 @@ object BloopBazel {
       val version = tags.find(_.startsWith("jvm_version")).map(_.substring(12))
 
       (module, version) match {
-        case (Some(m), Some(v)) if buildIO.contains(target.getTarget.getRule.getName) => Some(PantsLibrary(
-          name = s"$m:$v",
-          module = m,
-          values = Map(
-            "default" -> buildIO(target.getTarget.getRule.getName).outputs.head
-        )))
+        case (Some(m), Some(v))
+            if buildIO.contains(target.getTarget.getRule.getName) =>
+          Some(
+            PantsLibrary(
+              name = s"$m:$v",
+              module = m,
+              values = Map(
+                "default" -> buildIO(
+                  target.getTarget.getRule.getName
+                ).outputs.head
+              )
+            )
+          )
         case _ => None
       }
     }
 
-    private def transitiveLibraries(root: AnalysisProtosV2.ConfiguredTarget): Set[String] = {
+    private def transitiveLibraries(
+        root: AnalysisProtosV2.ConfiguredTarget
+    ): Set[String] = {
       val myTransitiveDeps = transitiveDeps(root)
       //val myDirectDeps = directDeps(root)
-      val mavenDeps = myTransitiveDeps
-        .iterator
+      val mavenDeps = myTransitiveDeps.iterator
         .filter { dep => dep.startsWith("@maven//:") }
         .flatMap { dep =>
           val target = targetMap(dep)
           getJvmModuleInfo(target).map { lib =>
             lib.name
           }
-        }.toSet
+        }
+        .toSet
 
       mavenDeps
     }
@@ -243,14 +278,18 @@ object BloopBazel {
         .filter { t => t.getTarget.getRule.getName.startsWith("@maven//:") }
         .map(t => t -> getJvmModuleInfo(t))
         .collect { case (t, Some(libInfo)) => t -> libInfo }
-        .foreach { case (t, libInfo) =>
-          out.put(libInfo.name, libInfo)
+        .foreach {
+          case (t, libInfo) =>
+            out.put(libInfo.name, libInfo)
         }
       out
     }
 
-    def buildTargets(cquery: AnalysisProtosV2.CqueryResult): Map[String, PantsTarget] = {
-      cquery.getResultsList.iterator()
+    def buildTargets(
+        cquery: AnalysisProtosV2.CqueryResult
+    ): Map[String, PantsTarget] = {
+      cquery.getResultsList
+        .iterator()
         .asScala
         .filterNot(_.getTarget.getRule.getName.endsWith(".semanticdb"))
         //.filter(ct => InterestingClasses.contains(ct.getTarget.getRule.getRuleClass))
@@ -267,7 +306,8 @@ object BloopBazel {
           val classesDir = Files.createDirectories(
             args.bloopDir.resolve(directoryName).resolve("classes")
           )
-          val internalSourcesJar = internalSourcesDir.resolve(id + "-sources.jar")
+          val internalSourcesJar =
+            internalSourcesDir.resolve(id + "-sources.jar")
 
           val baseDirectory = PantsConfiguration
             .baseDirectory(AbsolutePath(args.workspace), directorySafeName)
@@ -276,15 +316,16 @@ object BloopBazel {
 
           val myBuildIO = buildIO.get(targetName)
 
-          val sources = myBuildIO.map { bio =>
-            bio.sources
-              .iterator
-              .filter(_.getFileName.toString.endsWith(".scala"))
-              .map(_.getParent)
-              .toSet[Path]
-              .map(targetRoot.relativize)
-              .map(_.resolve("*.scala").toString)
-          }.getOrElse(Set.empty)
+          val sources = myBuildIO
+            .map { bio =>
+              bio.sources.iterator
+                .filter(_.getFileName.toString.endsWith(".scala"))
+                .map(_.getParent)
+                .toSet[Path]
+                .map(targetRoot.relativize)
+                .map(_.resolve("*.scala").toString)
+            }
+            .getOrElse(Set.empty)
 
           val sourceJar = myBuildIO.flatMap { bio =>
             bio.srcJar.headOption
@@ -335,15 +376,16 @@ object BloopBazel {
               bazelSourcesJar = sourceJar
             )
           )
-        }.toMap
+        }
+        .toMap
     }
   }
 
   def createExport(
-    args: Export,
-    cquery: AnalysisProtosV2.CqueryResult,
-    directTargets: Set[String],
-    buildIO: Map[String, BuildIO]
+      args: Export,
+      cquery: AnalysisProtosV2.CqueryResult,
+      directTargets: Set[String],
+      buildIO: Map[String, BuildIO]
   ): PantsExport = {
     val targetMap = cquery.getResultsList.asScala.map { t =>
       t.getTarget.getRule.getName -> t
@@ -352,7 +394,8 @@ object BloopBazel {
     val internalSourcesDir =
       Files.createDirectories(args.bloopDir.resolve("sources-jar"))
 
-    val impl = new Impl(args, targetMap, directTargets, buildIO, internalSourcesDir)
+    val impl =
+      new Impl(args, targetMap, directTargets, buildIO, internalSourcesDir)
     val targets = impl.buildTargets(cquery)
     val libs = impl.collectLibraries()
     val scalaCompiler = impl.collectScalaCompiler()
@@ -362,7 +405,9 @@ object BloopBazel {
       librariesJava = libs,
       internalSourcesDir = internalSourcesDir,
       scalaPlatform = scalaCompiler,
-      jvmDistribution = PantsPreferredJvmDistribution(Some(Paths.get("/usr/lib/jvm/java-1.8.0-twitter")))
+      jvmDistribution = PantsPreferredJvmDistribution(
+        Some(Paths.get("/usr/lib/jvm/java-1.8.0-twitter"))
+      )
     )
   }
 }
